@@ -9,35 +9,38 @@ Keep it simple and robust. This is a small, focused plugin, not a framework.
 ## Context (so the terrain is understood, not a spec)
 
 - Obsidian skips Markdown parsing inside HTML blocks by design (a CommonMark rule). We render the body ourselves.
-- A blank line inside a `<details>` block terminates the HTML block early in Obsidian. We therefore only support blocks with no interior blank lines (see Supported input).
+- A blank line inside a `<details>` block terminates the HTML block early in Obsidian, splitting the block across multiple render sections. The plugin re-assembles the block from raw source (Phase 1.5) so blank lines in the body are supported — essential for code fences (e.g. Python) that contain blank lines.
 - A reference plugin exists (`RubiaPath/obsidian-folded-markdown-renderer`). Do not fork or copy it. It is Reading-mode only and has fidelity and lifecycle problems we explicitly want to avoid. It may be read once for orientation, nothing more.
 
 ## Scope
 
-Two phases, each independently shippable:
+Three phases, each independently shippable:
 
-- **Phase 1 (MVP): Reading mode.** The simple, robust core.
-- **Phase 2: Live Preview (the editor).** The main reason the plugin exists, and the harder half. Build second.
+- **Phase 1 (MVP): Reading mode.** The simple, robust core. **Done.**
+- **Phase 1.5: Blank-line bodies in Reading mode.** Support blank lines inside the body (multi-section re-assembly from raw source).
+- **Phase 2: Live Preview (the editor).** The main reason the plugin exists, and the harder half. Build last; it assumes blank-line support from day one.
 
-Do not begin Phase 2 until Phase 1 meets its acceptance criteria.
+Do not begin Phase 2 until Phase 1.5 meets its acceptance criteria.
 
 ## Supported input (the contract)
 
-The plugin must handle exactly this shape, with no blank lines between the tags:
+The plugin must handle exactly this shape:
 
 ```
 <details>
 <summary>Summary text</summary>
 ### Any markdown body
-- lists, [[internal links]], tables, embeds
+- lists, [[internal links]], tables, embeds, code fences
+
+blank lines allowed in the body (Phase 1.5)
 </details>
 ```
 
 - `<details>` on its own line; an `open` attribute is allowed.
 - `<summary>...</summary>` optional, on a single line, immediately after `<details>`.
-- Body: everything between the summary (or the opening tag if no summary) and `</details>`.
+- Body: everything between the summary (or the opening tag if no summary) and `</details>`. Blank lines allowed (Phase 1.5), including inside code fences.
 - `</details>` on its own line.
-- Any block that does not match this shape (blank line inside, malformed, unclosed) is left untouched.
+- Any block that does not match this shape (malformed, unclosed) is left untouched.
 
 ## Functional requirements
 
@@ -59,7 +62,6 @@ The plugin must handle exactly this shape, with no blank lines between the tags:
 
 ## Non-goals (do not build now)
 
-- Rendering blocks that contain interior blank lines.
 - Rendering Markdown inside the `<summary>` text itself.
 - Settings beyond the single on/off toggle.
 - Deep nested-`<details>` fidelity beyond "the outer block renders and nothing breaks".
@@ -76,6 +78,7 @@ Build a test note covering each case. Phase 1 verifies in Reading mode; Phase 2 
 5. Body with a table, an internal link, and an embed: table renders, link resolves and is clickable, embed loads. Closing the note leaves nothing leaked or duplicated.
 6. Two blocks in one note both render independently.
 7. Toggling the setting off restores native behavior with no leftovers.
-8. A block with an interior blank line does not crash and is left as-is.
+8. A body with blank lines — including a code fence containing blank lines (Python-style) — renders fully inside the fold, with no escaped fragments left visible below it and no duplication. (Phase 1.5)
+9. An unclosed or malformed block does not crash and is left as-is; no unrelated content is hidden.
 
-Ship Phase 1 when 1, 4, 5, 6, 7 pass in Reading mode. Ship Phase 2 when all 8 pass in the editor.
+Ship Phase 1 when 1, 4, 5, 6, 7 pass in Reading mode. Ship Phase 1.5 when 8 and 9 also pass in Reading mode. Ship Phase 2 when all pass in the editor.

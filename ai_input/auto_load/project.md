@@ -1,10 +1,13 @@
 # Project: Details Markdown (Obsidian plugin)
 
-- Purpose: render Markdown inside native `<details>`/`<summary>` blocks. Requirements: `req.md` (Phase 1 = Reading mode, done; Phase 2 = Live Preview, next).
-- Commands: `npm test` (vitest, parser unit tests), `npm run build` (tsc typecheck + esbuild -> `main.js`), `npm run dev` (watch).
-- Architecture:
-  - `src/DetailsBlockParser.ts` — pure, unit-tested parser of the supported block shape; returns `null` for anything unsupported (caller leaves native rendering untouched).
-  - `src/main.ts` — plugin: Markdown post-processor re-renders body from **raw source** (`ctx.getSectionInfo`, never from rendered DOM) via `MarkdownRenderer.render`; lifecycle via `MarkdownRenderChild` + `ctx.addChild`; idempotency via `data-details-markdown-rendered` attribute; single on/off setting.
-- Constraint: Obsidian ends an HTML block at a blank line — blocks with interior blank lines are unsupported by design.
+- Purpose: render Markdown inside native `<details>`/`<summary>` blocks. Requirements: `req.md` (Phase 1 + 1.5 = Reading mode incl. blank-line bodies, done; Phase 2 = Live Preview, next).
+- Commands: `npm test` (vitest, pure-logic unit tests), `npm run build` (tsc typecheck + esbuild -> `main.js`), `npm run dev` (watch).
+- Architecture (all rendering from **raw source** via `ctx.getSectionInfo`, never from rendered DOM):
+  - `src/DetailsTagPatterns.ts` — shared line regexes (DRY between parser/scanner).
+  - `src/DetailsBlockParser.ts` — pure parser of one block's source; `null` = unsupported → native.
+  - `src/DetailsRangeScanner.ts` — pure scan of full note text for block line ranges (fence-aware, nesting-aware, unclosed → no range).
+  - `src/SectionRoleClassifier.ts` — pure: section line-span → opening | fragment | none.
+  - `src/main.ts` — orchestration: opening sections render full body (`MarkdownRenderer.render`); escaped fragment sections hidden (styles.css class) only after opening rendered; registry per path reconciles interior edits (in-place body re-render), boundary deletions (full view rerender), unhide, cleanup. Lifecycle via `MarkdownRenderChild` + `ctx.addChild`; idempotency via `data-details-markdown-rendered`.
+- Key constraint: Obsidian ends an HTML block at the first blank line — a blank-line body splits into multiple sections; plugin re-assembles them (that's the whole point of Phase 1.5). Reading mode renders sections lazily and detached-first (`isConnected` false during postprocessor).
 - Manual acceptance: `test-vault-notes/Details Markdown Acceptance.md` (needs a real vault; not runnable in CI).
 - Reference plugin `RubiaPath/obsidian-folded-markdown-renderer`: do NOT fork/copy (req.md).

@@ -1,0 +1,5 @@
+/* Escaped fragment sections of a <details> block whose body is rendered inside the fold.
+   Obsidian removes this stylesheet automatically when the plugin is disabled. */
+.details-markdown-hidden-fragment {
+  display: none;
+}

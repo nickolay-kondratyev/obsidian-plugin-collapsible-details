@@ -83,12 +83,26 @@ describe("DetailsBlockParser.parse", () => {
     });
   });
 
-  describe("GIVEN unsupported shapes", () => {
-    it("THEN a blank line inside the body is rejected", () => {
-      const source = ["<details>", "body", "", "more", "</details>"].join("\n");
-      expect(parse(source)).toBeNull();
+  describe("GIVEN a body with blank lines (Phase 1.5)", () => {
+    it("THEN blank lines between paragraphs are preserved", () => {
+      const source = ["<details>", "para one", "", "para two", "</details>"].join("\n");
+      expect(parse(source)?.bodyMarkdown).toBe("para one\n\npara two");
     });
 
+    it("THEN a code fence containing blank lines is preserved verbatim", () => {
+      const body = ["```python", "some code", "", "some more code", "```"];
+      const source = ["<details>", "<summary>s</summary>", ...body, "</details>"].join("\n");
+      expect(parse(source)?.bodyMarkdown).toBe(body.join("\n"));
+    });
+
+    it("THEN a literal </summary> inside a code fence is tolerated", () => {
+      const body = ["```html", "</summary>", "```"];
+      const source = ["<details>", ...body, "</details>"].join("\n");
+      expect(parse(source)?.bodyMarkdown).toBe(body.join("\n"));
+    });
+  });
+
+  describe("GIVEN unsupported shapes", () => {
     it("THEN a missing closing tag is rejected", () => {
       expect(parse(["<details>", "body"].join("\n"))).toBeNull();
     });

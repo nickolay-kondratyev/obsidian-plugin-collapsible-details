@@ -56,13 +56,32 @@ Expected: both render independently.
 Turn the plugin's setting off: all blocks above revert to native literal text with
 no leftovers. Turn it back on: they render again.
 
-## Test 8 — interior blank line (unsupported, must not crash)
+## Test 8 — blank lines in body, incl. code fence (Phase 1.5)
 
-Expected: left as-is (native behavior), no crash.
+Expected: everything below renders INSIDE the fold — both paragraphs and the full
+code fence with its blank lines. No escaped fragments visible below the fold, no
+duplication. Edit a line after a blank line, switch back to Reading mode: the fold
+updates (no stale body).
 
 <details>
-<summary>Test 8: blank line inside</summary>
-line before blank
+<summary>Test 8: blank lines and a Python fence</summary>
+paragraph before blank
 
-line after blank
+paragraph after blank
+```python
+some code
+
+some more code, code will have empty lines
+```
 </details>
+
+## Test 9 — unclosed block (malformed, must not crash)
+
+Expected: left as-is (native behavior), no crash, and the trailing text below is
+NOT hidden.
+
+<details>
+<summary>Test 9: no closing tag</summary>
+this block never closes
+
+This trailing paragraph must stay visible.
