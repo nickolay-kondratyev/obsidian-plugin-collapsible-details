@@ -3,7 +3,8 @@
   "name": "Details Markdown",
   "version": "0.1.0",
   "minAppVersion": "1.4.0",
-  "description": "Renders Markdown (headings, lists, tables, links, embeds) inside native <details>/<summary> blocks.",
+  "description": "Render Markdown (headings, lists, tables, links, embeds) inside native HTML details blocks in Reading view.",
   "author": "Nickolay Kondratyev",
+  "authorUrl": "https://github.com/nickolay-kondratyev",
   "isDesktopOnly": false
 }
