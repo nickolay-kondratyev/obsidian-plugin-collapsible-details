@@ -1,12 +1,15 @@
-# obsidian-plugin-collapsible-details
+# Details Markdown
 
-Obsidian plugin ("Details Markdown") that renders Markdown inside native HTML
+An Obsidian plugin that renders Markdown inside native HTML
 [`<details>`/`<summary>`](https://developer.mozilla.org/en-US/docs/Web/HTML/Reference/Elements/details)
-blocks — headings, lists, tables, internal links, and embeds render as real
-Markdown instead of literal text.
+blocks. Obsidian intentionally does not parse Markdown inside raw HTML blocks, so
+headings, lists, tables, internal links, and embeds inside a `<details>` fold show
+as literal text. This plugin fixes that: the body renders as real Markdown, visually
+identical to the same content written outside the block.
 
-Requirements: see [req.md](req.md). Phase 1 + 1.5 (Reading mode, incl. blank-line
-bodies) are implemented; Phase 2 (Live Preview) is next.
+> **Scope:** Rendering happens in **Reading view**. Live Preview (the editor) is not
+> yet supported — there, the block shows Obsidian's native output. Support for Live
+> Preview is planned for a future release.
 
 ## Supported block shape
 
@@ -20,8 +23,29 @@ blank lines in the body are supported (incl. inside code fences)
 </details>
 ```
 
-Tags must be on their own lines; the summary is optional and single-line.
-Unsupported/malformed/unclosed blocks are left untouched (native behavior).
+- `<details>` on its own line; an `open` attribute is allowed.
+- `<summary>...</summary>` is optional and single-line, immediately after `<details>`.
+- The body is everything up to `</details>`, on its own line.
+- Unsupported, malformed, or unclosed blocks are left untouched (native behavior).
+- Rendering the `<summary>` text itself as Markdown is out of scope.
+
+## Settings
+
+A single toggle enables or disables the plugin. When off, Obsidian's native
+(literal) behavior returns with nothing left behind.
+
+## Installation
+
+### From the Community Plugins directory
+
+Settings → Community plugins → Browse → search for "Details Markdown" → Install →
+Enable.
+
+### Manual
+
+Copy `manifest.json`, `main.js`, and `styles.css` into
+`<vault>/.obsidian/plugins/details-markdown/`, then enable the plugin in
+Settings → Community plugins.
 
 ## Development
 
@@ -32,29 +56,26 @@ npm run build   # typecheck + bundle -> main.js
 npm run dev     # watch mode
 ```
 
-Install into a vault: copy `manifest.json`, `main.js` and `styles.css` into
-`<vault>/.obsidian/plugins/details-markdown/`.
-
 Manual acceptance tests: `test-vault-notes/Details Markdown Acceptance.md`.
 
-## How it works (Phase 1 + 1.5)
+### How it works
 
 Obsidian ends an HTML block at the first blank line, so a `<details>` body with
 blank lines is split across several render sections and its tail "escapes" the
-fold. The plugin re-assembles blocks from **raw source** (never from rendered
-DOM):
+fold. The plugin re-assembles blocks from **raw source** (never from rendered DOM):
 
 - `DetailsRangeScanner` scans the full note text for supported block line ranges
   (fence-aware, nesting-aware; unclosed blocks yield no range).
 - `SectionRoleClassifier` decides per rendered section: **opening** (starts a
   block) → render the whole body via `MarkdownRenderer.render` into the existing
   `<details>` element (native `<summary>` and `open` attribute preserved);
-  **fragment** (escaped content inside a block) → hidden, but only once its
-  block's opening actually rendered, so content can never be lost.
+  **fragment** (escaped content inside a block) → hidden, but only once its block's
+  opening actually rendered, so content can never be lost.
 - A `MarkdownRenderChild` registered via `ctx.addChild` ties embeds/lifecycles to
   the note, so nothing leaks when the note closes. A registry reconciles edits:
   interior edits re-render the fold body in place; deleting a block boundary
   restores native output.
 
-A single settings toggle disables processing and re-renders open views to
-restore native behavior.
+## License
+
+[MIT](LICENSE)
