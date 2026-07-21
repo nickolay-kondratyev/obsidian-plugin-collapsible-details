@@ -75,6 +75,18 @@ some more code, code will have empty lines
 ```
 </details>
 
+## Test 10 — attributes on details and summary
+
+Expected: renders as a real heading and list (not literal text); the `class`
+attributes are preserved on the rendered `<details>`/`<summary>` for CSS snippets.
+
+<details class="bordered-when-open">
+<summary class="central-thought-centered">Use goals to set direction. Rely on systems to make progress.</summary>
+### Goals and Systems Simplified
+- **Consistency beats intensity:** small, regular actions.
+- **Enjoy the journey:** process over outcome.
+</details>
+
 ## Test 9 — unclosed block (malformed, must not crash)
 
 Expected: left as-is (native behavior), no crash, and the trailing text below is

@@ -36,8 +36,8 @@ blank lines allowed in the body (Phase 1.5)
 </details>
 ```
 
-- `<details>` on its own line; an `open` attribute is allowed.
-- `<summary>...</summary>` optional, on a single line, immediately after `<details>`.
+- `<details>` on its own line; any attributes are allowed (e.g. `open`, `class="..."`).
+- `<summary>...</summary>` optional, on a single line, immediately after `<details>`; attributes on the tag are allowed.
 - Body: everything between the summary (or the opening tag if no summary) and `</details>`. Blank lines allowed (Phase 1.5), including inside code fences.
 - `</details>` on its own line.
 - Any block that does not match this shape (malformed, unclosed) is left untouched.

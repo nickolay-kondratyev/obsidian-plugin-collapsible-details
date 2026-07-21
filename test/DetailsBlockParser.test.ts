@@ -50,6 +50,24 @@ describe("DetailsBlockParser.parse", () => {
     });
   });
 
+  describe("GIVEN class attributes on details and summary", () => {
+    const source = [
+      '<details class="bordered-when-open">',
+      '<summary class="central-thought-centered">Use goals to set direction.</summary>',
+      "### Goals and Systems",
+      "- item",
+      "</details>",
+    ].join("\n");
+
+    it("THEN the body markdown is extracted", () => {
+      expect(parse(source)?.bodyMarkdown).toBe("### Goals and Systems\n- item");
+    });
+
+    it("THEN the summary text (without its tag/attributes) is extracted", () => {
+      expect(parse(source)?.summaryText).toBe("Use goals to set direction.");
+    });
+  });
+
   describe("GIVEN body markdown with tables, links and embeds", () => {
     const body = [
       "| a | b |",
@@ -135,8 +153,8 @@ describe("DetailsBlockParser.parse", () => {
       expect(parse(source)?.bodyMarkdown).toBe("");
     });
 
-    it("THEN unrelated attributes on details are rejected", () => {
-      const source = ['<details class="x">', "body", "</details>"].join("\n");
+    it("THEN a tag name that merely starts with 'details' is rejected", () => {
+      const source = ["<detailsfoo>", "body", "</detailsfoo>"].join("\n");
       expect(parse(source)).toBeNull();
     });
   });
