@@ -12,39 +12,41 @@ Internal maintainer notes. Not part of the published plugin.
 - `versions.json` maps each plugin version to the minimum Obsidian version. Obsidian
   uses it to serve the right release to older apps.
 
-## 1. Bump the version (only when publishing a new version)
+## 1. Cut the release (one command)
 
-Keep these three in sync:
-
-- `manifest.json` → `version` (semver `x.y.z`) and `minAppVersion`.
-- `versions.json` → add `"x.y.z": "<minAppVersion>"`.
-- `package.json` → `version`.
-
-## 2. Stage the release assets
+From a clean working tree on the default branch:
 
 ```bash
-npm test              # must pass
-npm run release:assets
+npm run release patch     # 0.1.0 -> 0.1.1   (bug fixes)
+npm run release minor     # 0.1.0 -> 0.2.0   (new features)
+npm run release major     # 0.1.0 -> 1.0.0   (breaking changes)
+npm run release 1.2.3     # explicit version
 ```
 
-This builds the plugin and copies `main.js`, `manifest.json`, `styles.css` into the
-gitignored `.out/release/v<version>/` folder. Nothing to commit — these are
-artifacts.
+`scripts/release.mjs` does everything:
 
-## 3. Create the GitHub release
+1. Bumps and keeps the three version files in sync — `manifest.json` (`version`),
+   `package.json` (`version`), `versions.json` (adds `"x.y.z": "<minAppVersion>"`).
+2. Runs `npm test` and `npm run build` — a broken build never becomes a pushed tag.
+3. Commits `Release x.y.z`, tags `x.y.z` (no `v` prefix), and pushes branch + tag.
 
-Tag = manifest version, no `v` prefix. Push the tag first if not already pushed.
+To change `minAppVersion`, edit `manifest.json` first, then run the command above.
+
+## 2. GitHub builds and publishes the release
+
+Pushing the tag triggers `.github/workflows/release.yml`, which re-checks the tag
+matches the manifest version, builds the plugin, and creates the GitHub release with
+`main.js`, `manifest.json`, `styles.css` attached. **You never upload assets by
+hand** — GitHub builds them from the tagged source, so they can't drift.
+
+Watch the run:
 
 ```bash
-VERSION=$(node -p "require('./manifest.json').version")
-gh release create "$VERSION" .out/release/v"$VERSION"/* \
-  --title "$VERSION" --notes "Describe the changes."
+gh run watch
 ```
 
-Or via the GitHub web UI: Releases → Draft a new release → tag `<version>` →
-upload the three files from `.out/release/v<version>/`.
-
-Verify the release has exactly `main.js`, `manifest.json`, `styles.css` attached.
+When it finishes, verify the release has exactly `main.js`, `manifest.json`,
+`styles.css` attached.
 
 ## 4. Submit to the Community Plugins directory (first release only)
 
@@ -67,5 +69,6 @@ Requirements checklist the bot cares about:
 
 ## 5. Later versions
 
-Repeat steps 1–3. No re-submission needed — Obsidian detects the new release via
-the updated `manifest.json` + `versions.json` on the default branch.
+Repeat steps 1–2 (`npm run release <patch|minor|major>`). No re-submission needed —
+Obsidian detects the new release via the updated `manifest.json` + `versions.json`
+on the default branch.
