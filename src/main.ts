@@ -1,5 +1,6 @@
 import {
   App,
+  Keymap,
   MarkdownPostProcessorContext,
   MarkdownRenderChild,
   MarkdownRenderer,
@@ -7,9 +8,12 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  setIcon,
 } from "obsidian";
 import { DetailsBlockParser } from "./DetailsBlockParser";
 import { DetailsRange, DetailsRangeScanner } from "./DetailsRangeScanner";
+import { EmbedOpenLinkDecorator } from "./EmbedOpenLinkDecorator";
+import { EmbedOpenLinkRenderChild } from "./EmbedOpenLinkRenderChild";
 import { SectionRoleClassifier } from "./SectionRoleClassifier";
 
 interface DetailsMarkdownSettings {
@@ -160,9 +164,13 @@ export default class DetailsMarkdownPlugin extends Plugin {
     }
 
     const bodyContainer = detailsEl.createDiv({ cls: "details-markdown-body" });
-    // MarkdownRenderChild ties embeds/Dataview/etc. in the body to the note's
-    // lifecycle via ctx.addChild, so everything unloads when the note closes.
-    const lifecycleOwner = new MarkdownRenderChild(bodyContainer);
+    // Ties embeds/Dataview/etc. in the body to the note's lifecycle via ctx.addChild
+    // (so everything unloads when the note closes) and restores the native "Open link"
+    // affordance on embeds, which MarkdownRenderer.render does not add on its own.
+    const lifecycleOwner = new EmbedOpenLinkRenderChild(
+      bodyContainer,
+      this.createEmbedDecorator(ctx.sourcePath)
+    );
     ctx.addChild(lifecycleOwner);
     detailsEl.setAttribute(RENDERED_ATTRIBUTE, "true");
 
@@ -331,7 +339,10 @@ export default class DetailsMarkdownPlugin extends Plugin {
     // Unload the old lifecycle owner so embeds from the previous body do not leak.
     entry.lifecycleOwner.unload();
     entry.bodyContainer.empty();
-    const lifecycleOwner = new MarkdownRenderChild(entry.bodyContainer);
+    const lifecycleOwner = new EmbedOpenLinkRenderChild(
+      entry.bodyContainer,
+      this.createEmbedDecorator(ctx.sourcePath)
+    );
     ctx.addChild(lifecycleOwner);
     entry.lifecycleOwner = lifecycleOwner;
     entry.renderedSource = source;
@@ -347,6 +358,18 @@ export default class DetailsMarkdownPlugin extends Plugin {
   // ---------------------------------------------------------------------------
   // Helpers
   // ---------------------------------------------------------------------------
+
+  /** Builds an embed decorator that navigates to a source relative to the given note. */
+  private createEmbedDecorator(sourcePath: string): EmbedOpenLinkDecorator {
+    return new EmbedOpenLinkDecorator(setIcon, (linktext, event) => {
+      // Mod-click opens in a new tab/split/window, matching native link behavior.
+      void this.app.workspace.openLinkText(
+        linktext,
+        sourcePath,
+        Keymap.isModEvent(event)
+      );
+    });
+  }
 
   private findRenderedOpening(
     ctx: MarkdownPostProcessorContext,
