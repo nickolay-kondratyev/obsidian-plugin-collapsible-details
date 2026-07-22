@@ -1,7 +1,7 @@
 {
   "id": "details-markdown",
   "name": "Details Markdown",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "minAppVersion": "1.4.0",
   "description": "Render Markdown (headings, lists, tables, links, embeds) inside native HTML details blocks in Reading view.",
   "author": "Nickolay Kondratyev",

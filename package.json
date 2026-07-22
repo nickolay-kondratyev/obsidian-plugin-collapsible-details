@@ -1,6 +1,6 @@
 {
   "name": "details-markdown",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Obsidian plugin: render Markdown inside native HTML details blocks in Reading view.",
   "main": "main.js",
   "scripts": {
