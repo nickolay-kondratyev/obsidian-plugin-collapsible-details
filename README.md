@@ -75,6 +75,10 @@ fold. The plugin re-assembles blocks from **raw source** (never from rendered DO
   the note, so nothing leaks when the note closes. A registry reconciles edits:
   interior edits re-render the fold body in place; deleting a block boundary
   restores native output.
+- `MarkdownRenderer.render` is host-less, so it omits the reading-view "Open link"
+  button that decorates note embeds natively. An `EmbedOpenLinkRenderChild` restores
+  it: a scoped `MutationObserver` (disconnected on unload) re-applies the affordance
+  as embeds load — including lazily, when a collapsed fold is expanded.
 
 ## License
 
