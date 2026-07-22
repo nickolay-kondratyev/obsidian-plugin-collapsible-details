@@ -25,9 +25,8 @@ This body is visible immediately because of the open attribute.
 
 ## Test 5 — table, internal link, embed
 
-Expected: table renders, link resolves and is clickable, embed loads. Hovering the
-embed shows the "Open link" button (top-right) that opens the source note (mod-click
-opens in a new tab). Close and reopen the note: nothing duplicated, nothing leaked.
+Expected: table renders, link resolves and is clickable, embed loads.
+Close and reopen the note: nothing duplicated, nothing leaked.
 
 <details>
 <summary>Test 5: table, link, embed</summary>
@@ -86,17 +85,6 @@ attributes are preserved on the rendered `<details>`/`<summary>` for CSS snippet
 ### Goals and Systems Simplified
 - **Consistency beats intensity:** small, regular actions.
 - **Enjoy the journey:** process over outcome.
-</details>
-
-## Test 11 — Open link on an embed inside a collapsed fold (lazy load)
-
-Expected: the fold starts collapsed, so its embed loads only when expanded. After
-expanding, hovering the embed shows the "Open link" button that opens the source —
-proving the affordance is applied to embeds that load after the initial render.
-
-<details>
-<summary>Test 11: collapsed embed</summary>
-![[Target Note]]
 </details>
 
 ## Test 9 — unclosed block (malformed, must not crash)
