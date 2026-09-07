@@ -26,6 +26,35 @@ const RENDERED_ATTRIBUTE = "data-details-markdown-rendered";
 const HIDDEN_FRAGMENT_CLASS = "details-markdown-hidden-fragment";
 /** Bounded retries for the post-render fragment sweep, which must wait for DOM attach. */
 const FRAGMENT_SWEEP_MAX_TRIES = 10;
+/** Bounded retries while waiting for a freshly rendered section to be attached to its container. */
+const ATTACH_MAX_TRIES = 12;
+/** Delay between attach retries (ms). Generous on purpose: mobile attaches late under scroll. */
+const ATTACH_RETRY_MS = 100;
+/** Debounce for the container-wide reconcile pass (ms). */
+const RECONCILE_DEBOUNCE_MS = 80;
+/** Extra settle passes after a section attaches, for late-arriving siblings (ms). */
+const SETTLE_DELAYS_MS = [150, 600, 1500];
+
+/**
+ * Per-container watch used by the container-wide reconcile pass.
+ *
+ * WHY: the original one-shot sweep runs from the opening section's own render and
+ * depends on every sibling of the block already existing in the DOM. Obsidian mounts
+ * and unmounts preview sections while scrolling (heavily so on mobile), so in a long
+ * note the sweep either misses siblings that arrive later (escaped content stays
+ * visible next to the rendered fold — duplicated body) or runs against a section that
+ * is no longer attached (the fold never gets its body — empty block). Watching the
+ * container and re-reconciling on mutation/scroll makes the outcome independent of
+ * render order.
+ */
+interface ContainerWatch {
+  observer: MutationObserver;
+  scroller: HTMLElement | null;
+  onScroll: () => void;
+  ctx: MarkdownPostProcessorContext;
+  timer: number | null;
+  settleTimers: number[];
+}
 
 /** A <details> block whose body this plugin rendered; tracked to detect staleness and leaks. */
 interface RenderedBlockEntry {
@@ -52,6 +81,7 @@ interface PathBlocks {
 export default class DetailsMarkdownPlugin extends Plugin {
   settings: DetailsMarkdownSettings = DEFAULT_SETTINGS;
   private readonly blocksByPath = new Map<string, PathBlocks>();
+  private readonly watchers = new Map<HTMLElement, ContainerWatch>();
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -68,9 +98,23 @@ export default class DetailsMarkdownPlugin extends Plugin {
         console.error("details-markdown: failed to process section", error);
       }
     });
+
+    // Drop watches whose container left the DOM (note closed, leaf replaced).
+    this.registerEvent(
+      this.app.workspace.on("layout-change", () => this.pruneDeadWatchers())
+    );
+  }
+
+  private pruneDeadWatchers(): void {
+    for (const container of Array.from(this.watchers.keys())) {
+      if (!container.isConnected) {
+        this.disposeWatcher(container);
+      }
+    }
   }
 
   onunload(): void {
+    this.teardownWatchers();
     this.blocksByPath.clear();
     // Restore native rendering in already-open views.
     this.rerenderOpenMarkdownViews();
@@ -86,6 +130,7 @@ export default class DetailsMarkdownPlugin extends Plugin {
 
   /** Applies a settings toggle immediately: full re-render restores native or rendered state. */
   onEnabledSettingChanged(): void {
+    this.teardownWatchers();
     this.blocksByPath.clear();
     this.rerenderOpenMarkdownViews();
   }
@@ -131,6 +176,193 @@ export default class DetailsMarkdownPlugin extends Plugin {
       await this.renderOpeningSection(el, ctx, role.range, lines);
     } else if (role.kind === "fragment") {
       this.hideFragmentIfBlockRendered(el, ctx, role.range);
+    }
+
+    // Order-independent safety net: watch this section's container and reconcile the
+    // whole visible list whenever sections mount, unmount or scroll into view.
+    if (ranges.length > 0) {
+      this.scheduleContainerAttach(el, ctx, ATTACH_MAX_TRIES);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Container-wide reconcile (order-independent)
+  // ---------------------------------------------------------------------------
+
+  /** Waits for the section to be attached, then starts (or refreshes) its container watch. */
+  private scheduleContainerAttach(
+    el: HTMLElement,
+    ctx: MarkdownPostProcessorContext,
+    triesLeft: number
+  ): void {
+    const parent = el.parentElement;
+    if (parent !== null && el.isConnected) {
+      this.ensureWatcher(parent, ctx);
+      this.scheduleReconcile(parent);
+      const watch = this.watchers.get(parent);
+      if (watch !== undefined && watch.settleTimers.length === 0) {
+        for (const delay of SETTLE_DELAYS_MS) {
+          watch.settleTimers.push(
+            window.setTimeout(() => this.scheduleReconcile(parent), delay)
+          );
+        }
+      }
+      return;
+    }
+    if (triesLeft <= 0) {
+      return;
+    }
+    window.setTimeout(
+      () => this.scheduleContainerAttach(el, ctx, triesLeft - 1),
+      ATTACH_RETRY_MS
+    );
+  }
+
+  private ensureWatcher(container: HTMLElement, ctx: MarkdownPostProcessorContext): void {
+    const existing = this.watchers.get(container);
+    if (existing !== undefined) {
+      // Keep the freshest context: older ones can outlive their render pass.
+      existing.ctx = ctx;
+      return;
+    }
+    const observer = new MutationObserver(() => this.scheduleReconcile(container));
+    observer.observe(container, { childList: true });
+    const scroller =
+      (container.closest(".markdown-preview-view") as HTMLElement | null) ??
+      (container.parentElement as HTMLElement | null);
+    const onScroll = () => this.scheduleReconcile(container);
+    scroller?.addEventListener("scroll", onScroll, { passive: true });
+    this.watchers.set(container, {
+      observer,
+      scroller,
+      onScroll,
+      ctx,
+      timer: null,
+      settleTimers: [],
+    });
+  }
+
+  private scheduleReconcile(container: HTMLElement): void {
+    const watch = this.watchers.get(container);
+    if (watch === undefined) {
+      return;
+    }
+    if (watch.timer !== null) {
+      window.clearTimeout(watch.timer);
+    }
+    watch.timer = window.setTimeout(() => {
+      watch.timer = null;
+      void this.reconcileContainer(container).catch((error) =>
+        console.error("details-markdown: container reconcile failed", error)
+      );
+    }, RECONCILE_DEBOUNCE_MS);
+  }
+
+  /**
+   * Reconciles every section currently in the container against the note source:
+   * renders any opening whose body is still native, hides escaped fragments whose
+   * fold is rendered, and unhides fragments whose fold is gone.
+   */
+  private async reconcileContainer(container: HTMLElement): Promise<void> {
+    const watch = this.watchers.get(container);
+    if (watch === undefined) {
+      return;
+    }
+    if (!container.isConnected || !this.settings.enabled) {
+      this.disposeWatcher(container);
+      return;
+    }
+    const ctx = watch.ctx;
+    const children = Array.from(container.children).filter(
+      (child): child is HTMLElement => child instanceof HTMLElement
+    );
+
+    let text: string | null = null;
+    for (const child of children) {
+      const info = ctx.getSectionInfo(child);
+      if (info !== null) {
+        text = info.text;
+        break;
+      }
+    }
+    if (text === null) {
+      return;
+    }
+    const lines = text.split("\n");
+    const ranges = DetailsRangeScanner.scan(text);
+    if (ranges.length === 0) {
+      return;
+    }
+
+    // Pass 1 — make sure every opening currently in the container has its body rendered.
+    // The map records, per block start line, whether that opening ended up rendered;
+    // a block whose opening is simply off-screen is absent from it.
+    const openingRendered = new Map<number, boolean>();
+    for (const child of children) {
+      const info = ctx.getSectionInfo(child);
+      if (info === null) {
+        continue;
+      }
+      const role = SectionRoleClassifier.classify(ranges, info.lineStart, info.lineEnd);
+      if (role.kind !== "opening") {
+        continue;
+      }
+      await this.renderOpeningSection(child, ctx, role.range, lines);
+      const detailsEl = child.querySelector(`details[${RENDERED_ATTRIBUTE}]`);
+      openingRendered.set(role.range.startLine, detailsEl !== null);
+    }
+
+    // Pass 2 — hide escaped fragments whose fold is rendered; unhide only when we can
+    // prove the content would otherwise be lost (block gone from source, or its opening
+    // is on screen yet unrendered). An off-screen opening leaves fragments untouched,
+    // so scrolling does not flicker content in and out.
+    const path = ctx.sourcePath;
+    for (const child of children) {
+      const info = ctx.getSectionInfo(child);
+      if (info === null) {
+        continue;
+      }
+      const role = SectionRoleClassifier.classify(ranges, info.lineStart, info.lineEnd);
+      const hidden = child.classList.contains(HIDDEN_FRAGMENT_CLASS);
+      if (role.kind === "fragment" && openingRendered.get(role.range.startLine) === true) {
+        if (!hidden) {
+          this.hideFragment(child, path);
+        }
+        continue;
+      }
+      const mustUnhide =
+        hidden &&
+        (role.kind !== "fragment" || openingRendered.get(role.range.startLine) === false);
+      if (mustUnhide) {
+        child.classList.remove(HIDDEN_FRAGMENT_CLASS);
+        const blocks = this.pathBlocks(path);
+        const entry = blocks.hidden.find((f) => f.el === child);
+        if (entry !== undefined) {
+          this.remove(blocks.hidden, entry);
+        }
+      }
+    }
+  }
+
+  private disposeWatcher(container: HTMLElement): void {
+    const watch = this.watchers.get(container);
+    if (watch === undefined) {
+      return;
+    }
+    watch.observer.disconnect();
+    watch.scroller?.removeEventListener("scroll", watch.onScroll);
+    if (watch.timer !== null) {
+      window.clearTimeout(watch.timer);
+    }
+    for (const timer of watch.settleTimers) {
+      window.clearTimeout(timer);
+    }
+    this.watchers.delete(container);
+  }
+
+  private teardownWatchers(): void {
+    for (const container of Array.from(this.watchers.keys())) {
+      this.disposeWatcher(container);
     }
   }
 
