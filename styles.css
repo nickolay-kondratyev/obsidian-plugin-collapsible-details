@@ -1,5 +1,12 @@
 /* Escaped fragment sections of a <details> block whose body is rendered inside the fold.
    Obsidian removes this stylesheet automatically when the plugin is disabled. */
 .details-markdown-hidden-fragment {
-  display: none;
+  /* Stay in layout at 0 height, not display: none. Reading view sizes each section
+     from its next sibling's offsetTop, which is 0 for a display: none element. That
+     gives the fold a negative height, so content vanishes at some scroll positions. */
+  height: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  overflow: hidden;
 }
