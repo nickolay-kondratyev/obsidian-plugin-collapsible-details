@@ -7,6 +7,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  TFile,
 } from "obsidian";
 import { DetailsBlockParser } from "./DetailsBlockParser";
 import { DetailsRange, DetailsRangeScanner } from "./DetailsRangeScanner";
@@ -121,8 +122,9 @@ export default class DetailsMarkdownPlugin extends Plugin {
       // No source access (embeds, export, nested renders): leave native.
       return;
     }
-    const lines = sectionInfo.text.split("\n");
-    const ranges = DetailsRangeScanner.scan(sectionInfo.text);
+    const text = await this.fullSourceText(ctx, sectionInfo);
+    const lines = text.split("\n");
+    const ranges = DetailsRangeScanner.scan(text);
 
     await this.reconcileTrackedBlocks(ctx, ranges, lines);
 
@@ -132,6 +134,22 @@ export default class DetailsMarkdownPlugin extends Plugin {
     } else if (role.kind === "fragment") {
       this.hideFragmentIfBlockRendered(el, ctx, role.range);
     }
+  }
+
+  /**
+   * While Reading view renders a long note, the first sections' getSectionInfo() text
+   * can be a single line, so no <details> range is found and those folds stay native.
+   * Fall back to the note's whole source whenever the given text ends before the section.
+   */
+  private async fullSourceText(
+    ctx: MarkdownPostProcessorContext,
+    sectionInfo: { text: string; lineEnd: number }
+  ): Promise<string> {
+    if (sectionInfo.text.split("\n").length > sectionInfo.lineEnd) {
+      return sectionInfo.text;
+    }
+    const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath);
+    return file instanceof TFile ? this.app.vault.cachedRead(file) : sectionInfo.text;
   }
 
   /** Renders the full block body (from raw source) into the section's <details> element. */
