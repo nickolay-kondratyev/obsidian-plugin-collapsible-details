@@ -165,6 +165,11 @@ export default class DetailsMarkdownPlugin extends Plugin {
     const lifecycleOwner = new MarkdownRenderChild(bodyContainer);
     ctx.addChild(lifecycleOwner);
     detailsEl.setAttribute(RENDERED_ATTRIBUTE, "true");
+    // Reading view mounts only sections near the viewport, from cached heights.
+    // Toggling the fold changes this section's height without telling it, so after
+    // an edit made while open, sections below stay detached and blank on collapse.
+    // A workspace resize makes Reading view re-measure and remount them.
+    detailsEl.addEventListener("toggle", () => this.app.workspace.trigger("resize"));
 
     await MarkdownRenderer.render(
       this.app,
