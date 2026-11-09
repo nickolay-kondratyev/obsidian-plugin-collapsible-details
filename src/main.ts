@@ -372,7 +372,7 @@ export default class DetailsMarkdownPlugin extends Plugin {
         // The view's text is partial mid-render; decide on a later pass.
         continue;
       }
-      const range = ranges.find((r) => r.startLine === info.lineStart);
+      const range = ranges.find((r) => info.lineStart <= r.startLine && r.startLine <= info.lineEnd);
       if (range === undefined) {
         // Block boundary edited away (e.g. </details> deleted): full re-render restores
         // native output; entry removed first so this cannot loop.
@@ -458,7 +458,8 @@ export default class DetailsMarkdownPlugin extends Plugin {
   ): RenderedBlockEntry | null {
     for (const entry of this.pathBlocks(path).rendered) {
       const info = ctx.getSectionInfo(entry.sectionEl);
-      if (info !== null && info.lineStart === blockStartLine) {
+      // The opening section holds the block's start line, possibly after glued text.
+      if (info !== null && info.lineStart <= blockStartLine && blockStartLine <= info.lineEnd) {
         return entry;
       }
     }

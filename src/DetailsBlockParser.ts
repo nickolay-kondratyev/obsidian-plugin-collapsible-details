@@ -16,6 +16,7 @@ export interface ParsedDetailsBlock {
  *   ...markdown body...      (blank lines allowed — Phase 1.5)
  *   </details>               (own line)
  *
+ * The summary may also share the opening line, as `<details><summary>...</summary>`.
  * Anything else returns null so callers leave Obsidian's native rendering untouched.
  */
 export class DetailsBlockParser {
@@ -29,7 +30,8 @@ export class DetailsBlockParser {
     if (lines.length < 2) {
       return null;
     }
-    if (!DetailsTagPatterns.OPENING_LINE.test(lines[0])) {
+    const openingMatch = lines[0].match(DetailsTagPatterns.OPENING_LINE);
+    if (openingMatch === null) {
       return null;
     }
     if (!DetailsTagPatterns.CLOSING_LINE.test(lines[lines.length - 1])) {
@@ -37,6 +39,10 @@ export class DetailsBlockParser {
     }
 
     const innerLines = lines.slice(1, lines.length - 1);
+    const inlineSummary = openingMatch[1];
+    if (inlineSummary !== undefined) {
+      return { summaryText: inlineSummary, bodyMarkdown: innerLines.join("\n") };
+    }
     const summaryMatch =
       innerLines.length > 0 ? innerLines[0].match(DetailsTagPatterns.SUMMARY_LINE) : null;
     // A <summary> that opens but is not a valid single line (e.g. spans multiple lines)
