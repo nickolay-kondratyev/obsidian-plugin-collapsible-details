@@ -42,6 +42,33 @@ describe("DetailsBlockParser.parse", () => {
     });
   });
 
+  describe("GIVEN a summary sharing the opening line, as exported web pages write it", () => {
+    const source = ["<details><summary>Read more</summary>", "", "Para one.", "", "Para two.", "", "</details>"].join("\n");
+
+    it("THEN extracts the summary text", () => {
+      expect(parse(source)?.summaryText).toBe("Read more");
+    });
+
+    it("THEN the body is every line between the opening and closing lines", () => {
+      expect(parse(source)?.bodyMarkdown).toBe("\nPara one.\n\nPara two.\n");
+    });
+
+    it("THEN attributes on both tags are allowed", () => {
+      const withAttrs = ['<details open class="x"> <summary id="s">S</summary>', "body", "</details>"].join("\n");
+      expect(parse(withAttrs)?.summaryText).toBe("S");
+    });
+
+    it("THEN text after the inline summary is rejected", () => {
+      const trailing = ["<details><summary>S</summary> extra", "body", "</details>"].join("\n");
+      expect(parse(trailing)).toBeNull();
+    });
+
+    it("THEN an inline summary left open is rejected", () => {
+      const unclosed = ["<details><summary>S", "body", "</details>"].join("\n");
+      expect(parse(unclosed)).toBeNull();
+    });
+  });
+
   describe("GIVEN a block with the open attribute", () => {
     const source = ["<details open>", "body", "</details>"].join("\n");
 

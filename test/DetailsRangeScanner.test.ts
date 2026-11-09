@@ -36,6 +36,16 @@ describe("DetailsRangeScanner.scan", () => {
     expect(scan(lines)).toEqual([{ startLine: 0, endLine: 2 }]);
   });
 
+  it("THEN an opening line that also holds the summary is recognized", () => {
+    const lines = ["<details><summary>S</summary>", "", "body", "", "</details>"];
+    expect(scan(lines)).toEqual([{ startLine: 0, endLine: 4 }]);
+  });
+
+  it("THEN a nested inline-summary block extends the outer range to the matching close", () => {
+    const lines = ["<details><summary>Outer</summary>", "<details><summary>Inner</summary>", "x", "</details>", "</details>"];
+    expect(scan(lines)).toEqual([{ startLine: 0, endLine: 4 }]);
+  });
+
   it("THEN a nested block on its own lines extends the outer range to the matching close", () => {
     const lines = ["<details>", "<details>", "inner", "</details>", "</details>"];
     expect(scan(lines)).toEqual([{ startLine: 0, endLine: 4 }]);
