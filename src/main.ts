@@ -102,6 +102,12 @@ export default class DetailsMarkdownPlugin extends Plugin {
       })
     );
     this.registerEvent(this.app.vault.on("delete", (file) => this.blocksByPath.delete(file.path)));
+
+    // Reading view mounts only sections near the viewport, picked from cached heights.
+    // Toggling any fold, even a native one inside a callout, changes its section's height
+    // without telling it, so sections below stay detached and blank on the next scroll.
+    // toggle doesn't bubble, so listen in the capture phase.
+    this.registerDomEvent(document, "toggle", (event) => this.remeasureToggledSection(event.target), true);
   }
 
   onunload(): void {
@@ -148,6 +154,35 @@ export default class DetailsMarkdownPlugin extends Plugin {
       const view = leaf.view;
       if (view instanceof MarkdownView && view.file?.path === path) {
         view.previewMode?.rerender(true);
+      }
+    }
+  }
+
+  /**
+   * Re-measures a toggled fold's section, then remounts sections from its new height.
+   * A workspace resize is not enough: it remounts from the stale height without re-measuring.
+   */
+  private remeasureToggledSection(target: EventTarget | null): void {
+    if (!(target instanceof HTMLDetailsElement)) {
+      return;
+    }
+    // Reading view's section renderer is private API.
+    type PreviewRenderer = {
+      getSectionForElement(el: Node): object | null;
+      measureSection(section: object): void;
+      updateVirtualDisplay(): void;
+    };
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) {
+        continue;
+      }
+      const renderer = (view.previewMode as unknown as { renderer?: PreviewRenderer }).renderer;
+      const section = renderer?.getSectionForElement(target);
+      if (renderer !== undefined && section != null) {
+        renderer.measureSection(section);
+        renderer.updateVirtualDisplay();
+        return;
       }
     }
   }
@@ -236,11 +271,6 @@ export default class DetailsMarkdownPlugin extends Plugin {
     const lifecycleOwner = new MarkdownRenderChild(bodyContainer);
     ctx.addChild(lifecycleOwner);
     detailsEl.setAttribute(RENDERED_ATTRIBUTE, "true");
-    // Reading view mounts only sections near the viewport, from cached heights.
-    // Toggling the fold changes this section's height without telling it, so after
-    // an edit made while open, sections below stay detached and blank on collapse.
-    // A workspace resize makes Reading view re-measure and remount them.
-    detailsEl.addEventListener("toggle", () => this.app.workspace.trigger("resize"));
 
     await MarkdownRenderer.render(
       this.app,
