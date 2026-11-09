@@ -36,7 +36,16 @@ describe("SectionRoleClassifier.classify", () => {
     expect(classify(13, 15)).toEqual({ kind: "none" });
   });
 
-  it("THEN a section starting before the block start is none even if it overlaps", () => {
-    expect(classify(3, 12)).toEqual({ kind: "none" });
+  it("THEN a section holding the block start after glued text is the opening", () => {
+    expect(classify(3, 5)).toEqual({ kind: "opening", range });
+  });
+
+  it("THEN a glued section covering the whole block is the opening", () => {
+    expect(classify(3, 12)).toEqual({ kind: "opening", range });
+  });
+
+  it("THEN a closing-tag section glued to the next block's opening opens that block", () => {
+    const next: DetailsRange = { startLine: 13, endLine: 20 };
+    expect(SectionRoleClassifier.classify([range, next], 12, 13)).toEqual({ kind: "opening", range: next });
   });
 });

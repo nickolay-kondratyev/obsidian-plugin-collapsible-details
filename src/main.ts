@@ -7,10 +7,11 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  TFile,
 } from "obsidian";
 import { DetailsBlockParser } from "./DetailsBlockParser";
 import { DetailsRange, DetailsRangeScanner } from "./DetailsRangeScanner";
-import { SectionRoleClassifier } from "./SectionRoleClassifier";
+import { SectionRole, SectionRoleClassifier } from "./SectionRoleClassifier";
 
 interface DetailsMarkdownSettings {
   enabled: boolean;
@@ -22,13 +23,16 @@ const DEFAULT_SETTINGS: DetailsMarkdownSettings = {
 
 /** Marks a <details> element whose body we already replaced, so re-runs never double-render. */
 const RENDERED_ATTRIBUTE = "data-details-markdown-rendered";
-/** Hides escaped fragment sections (styles.css); removed by unhide/reconcile. */
+/** Hides escaped fragment sections (styles.css); kept in sync with the source by reconcile. */
 const HIDDEN_FRAGMENT_CLASS = "details-markdown-hidden-fragment";
-/** Bounded retries for the post-render fragment sweep, which must wait for DOM attach. */
-const FRAGMENT_SWEEP_MAX_TRIES = 10;
+/** After a vault or workspace event, how often and how long to re-sync while views re-parse. */
+const SETTLE_INTERVAL_MS = 200;
+const SETTLE_DURATION_MS = 2000;
 
 /** A <details> block whose body this plugin rendered; tracked to detect staleness and leaks. */
 interface RenderedBlockEntry {
+  /** The context of the view that rendered the block; resolves its section in that view. */
+  ctx: MarkdownPostProcessorContext;
   sectionEl: HTMLElement;
   detailsEl: HTMLElement;
   bodyContainer: HTMLElement;
@@ -38,15 +42,28 @@ interface RenderedBlockEntry {
   everConnected: boolean;
 }
 
-/** A section we hid because its content is rendered inside a fold; tracked so it can be unhidden. */
-interface HiddenFragmentEntry {
-  el: HTMLElement;
+/** A processed section; tracked so its hidden state follows edits Obsidian never re-processes it for. */
+interface TrackedSection {
+  /** The context of the view that rendered the section; resolves its lines in that view. */
+  ctx: MarkdownPostProcessorContext;
   everConnected: boolean;
+  /** The view's source text this section's hidden state was last decided against. */
+  syncedText: string | null;
 }
 
 interface PathBlocks {
   rendered: RenderedBlockEntry[];
-  hidden: HiddenFragmentEntry[];
+  sections: Map<HTMLElement, TrackedSection>;
+  /** The note source last seen by the post-processor; a change triggers a reconcile. */
+  source: string | null;
+  settleUntil: number;
+  settling: boolean;
+}
+
+/** A source text split into lines and scanned for <details> ranges, cached per reconcile. */
+interface ScannedSource {
+  lines: string[];
+  ranges: DetailsRange[];
 }
 
 export default class DetailsMarkdownPlugin extends Plugin {
@@ -68,10 +85,33 @@ export default class DetailsMarkdownPlugin extends Plugin {
         console.error("details-markdown: failed to process section", error);
       }
     });
+
+    // Reading view post-processes only sections whose text changed, so an edit that only
+    // deletes sections (e.g. a removed </details> line), or a hidden tab re-parsing when
+    // shown, runs no post-processor. Re-sync after every event that can change a view.
+    this.registerEvent(this.app.vault.on("modify", (file) => this.settle(file.path)));
+    this.registerEvent(this.app.workspace.on("active-leaf-change", () => this.settleOpenNotes()));
+    this.registerEvent(this.app.workspace.on("layout-change", () => this.settleOpenNotes()));
+    this.registerEvent(
+      this.app.vault.on("rename", (file, oldPath) => {
+        const blocks = this.blocksByPath.get(oldPath);
+        if (blocks !== undefined) {
+          this.blocksByPath.delete(oldPath);
+          this.blocksByPath.set(file.path, blocks);
+        }
+      })
+    );
+    this.registerEvent(this.app.vault.on("delete", (file) => this.blocksByPath.delete(file.path)));
+
+    // Reading view mounts only sections near the viewport, picked from cached heights.
+    // Toggling any fold, even a native one inside a callout, changes its section's height
+    // without telling it, so sections below stay detached and blank on the next scroll.
+    // toggle doesn't bubble, so listen in the capture phase.
+    this.registerDomEvent(document, "toggle", (event) => this.remeasureToggledSection(event.target), true);
   }
 
   onunload(): void {
-    this.blocksByPath.clear();
+    this.forgetAllBlocks();
     // Restore native rendering in already-open views.
     this.rerenderOpenMarkdownViews();
   }
@@ -86,8 +126,18 @@ export default class DetailsMarkdownPlugin extends Plugin {
 
   /** Applies a settings toggle immediately: full re-render restores native or rendered state. */
   onEnabledSettingChanged(): void {
-    this.blocksByPath.clear();
+    this.forgetAllBlocks();
     this.rerenderOpenMarkdownViews();
+  }
+
+  /** Re-renders reuse section elements, so unhide every fragment before dropping tracking. */
+  private forgetAllBlocks(): void {
+    for (const blocks of this.blocksByPath.values()) {
+      for (const el of blocks.sections.keys()) {
+        el.classList.remove(HIDDEN_FRAGMENT_CLASS);
+      }
+    }
+    this.blocksByPath.clear();
   }
 
   private rerenderOpenMarkdownViews(): void {
@@ -108,6 +158,35 @@ export default class DetailsMarkdownPlugin extends Plugin {
     }
   }
 
+  /**
+   * Re-measures a toggled fold's section, then remounts sections from its new height.
+   * A workspace resize is not enough: it remounts from the stale height without re-measuring.
+   */
+  private remeasureToggledSection(target: EventTarget | null): void {
+    if (!(target instanceof HTMLDetailsElement)) {
+      return;
+    }
+    // Reading view's section renderer is private API.
+    type PreviewRenderer = {
+      getSectionForElement(el: Node): object | null;
+      measureSection(section: object): void;
+      updateVirtualDisplay(): void;
+    };
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) {
+        continue;
+      }
+      const renderer = (view.previewMode as unknown as { renderer?: PreviewRenderer }).renderer;
+      const section = renderer?.getSectionForElement(target);
+      if (renderer !== undefined && section != null) {
+        renderer.measureSection(section);
+        renderer.updateVirtualDisplay();
+        return;
+      }
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Section processing
   // ---------------------------------------------------------------------------
@@ -121,23 +200,50 @@ export default class DetailsMarkdownPlugin extends Plugin {
       // No source access (embeds, export, nested renders): leave native.
       return;
     }
-    const lines = sectionInfo.text.split("\n");
-    const ranges = DetailsRangeScanner.scan(sectionInfo.text);
+    const text = await this.fullSourceText(ctx, sectionInfo);
+    const lines = text.split("\n");
+    const ranges = DetailsRangeScanner.scan(text);
 
-    await this.reconcileTrackedBlocks(ctx, ranges, lines);
+    const path = ctx.sourcePath;
+    const blocks = this.pathBlocks(path);
+    if (text !== blocks.source) {
+      blocks.source = text;
+      await this.reconcileTrackedBlocks(path, blocks);
+    }
 
     const role = SectionRoleClassifier.classify(ranges, sectionInfo.lineStart, sectionInfo.lineEnd);
+    blocks.sections.set(el, {
+      ctx,
+      everConnected: el.isConnected,
+      syncedText: text === sectionInfo.text ? text : null,
+    });
     if (role.kind === "opening") {
-      await this.renderOpeningSection(el, ctx, role.range, lines);
-    } else if (role.kind === "fragment") {
-      this.hideFragmentIfBlockRendered(el, ctx, role.range);
+      await this.renderOpeningSection(el, ctx, path, role.range, lines);
     }
+    this.syncFragmentHidden(el, ctx, path, role);
+  }
+
+  /**
+   * While Reading view renders a long note, the first sections' getSectionInfo() text
+   * can be a single line, so no <details> range is found and those folds stay native.
+   * Fall back to the note's whole source whenever the given text ends before the section.
+   */
+  private async fullSourceText(
+    ctx: MarkdownPostProcessorContext,
+    sectionInfo: { text: string; lineEnd: number }
+  ): Promise<string> {
+    if (sectionInfo.text.split("\n").length > sectionInfo.lineEnd) {
+      return sectionInfo.text;
+    }
+    const file = this.app.vault.getAbstractFileByPath(ctx.sourcePath);
+    return file instanceof TFile ? this.app.vault.cachedRead(file) : sectionInfo.text;
   }
 
   /** Renders the full block body (from raw source) into the section's <details> element. */
   private async renderOpeningSection(
     sectionEl: HTMLElement,
     ctx: MarkdownPostProcessorContext,
+    path: string,
     range: DetailsRange,
     lines: string[]
   ): Promise<void> {
@@ -170,11 +276,18 @@ export default class DetailsMarkdownPlugin extends Plugin {
       this.app,
       parsed.bodyMarkdown,
       bodyContainer,
-      ctx.sourcePath,
+      path,
       lifecycleOwner
     );
 
-    this.pathBlocks(ctx.sourcePath).rendered.push({
+    const blocks = this.pathBlocks(path);
+    // A full re-render reuses the section element, so replace its earlier entry.
+    for (const old of blocks.rendered.filter((e) => e.sectionEl === sectionEl)) {
+      old.lifecycleOwner.unload();
+      this.remove(blocks.rendered, old);
+    }
+    blocks.rendered.push({
+      ctx,
       sectionEl,
       detailsEl,
       bodyContainer,
@@ -184,104 +297,112 @@ export default class DetailsMarkdownPlugin extends Plugin {
     });
 
     // Fragment sections may have rendered before this opening (scroll order is not
-    // guaranteed); sweep siblings once attached so nothing shows twice.
-    this.scheduleFragmentSweep(sectionEl, ctx, FRAGMENT_SWEEP_MAX_TRIES);
+    // guaranteed), so hide those already processed, attached or not.
+    this.hideTrackedFragments(ctx, blocks, range);
   }
 
   /**
-   * Hides an escaped fragment section, but only when its block's opening is actually
-   * rendered — otherwise (e.g. opening glued into a list section) hiding would lose content.
+   * Hides a fragment section exactly when its block's opening section rendered the body,
+   * so a fold this plugin does not render (e.g. glued into a list) never loses content.
+   * Openings stay tracked while detached, so fragments mounted later still find them.
    */
-  private hideFragmentIfBlockRendered(
+  private syncFragmentHidden(
     el: HTMLElement,
     ctx: MarkdownPostProcessorContext,
+    path: string,
+    role: SectionRole
+  ): void {
+    const hide =
+      role.kind === "fragment" && this.findRenderedOpening(ctx, path, role.range.startLine) !== null;
+    el.classList.toggle(HIDDEN_FRAGMENT_CLASS, hide);
+  }
+
+  private hideTrackedFragments(
+    ctx: MarkdownPostProcessorContext,
+    blocks: PathBlocks,
     range: DetailsRange
   ): void {
-    const opening = this.findRenderedOpening(ctx, ctx.sourcePath, range.startLine);
-    if (opening === null) {
-      // The opening's post-render sweep will hide this section if the block renders.
-      return;
-    }
-    this.hideFragment(el, ctx.sourcePath);
-  }
-
-  /** After the opening attaches, hides already-rendered sibling sections inside its block. */
-  private scheduleFragmentSweep(
-    sectionEl: HTMLElement,
-    ctx: MarkdownPostProcessorContext,
-    triesLeft: number
-  ): void {
-    if (triesLeft <= 0) {
-      return;
-    }
-    requestAnimationFrame(() => {
-      try {
-        if (!sectionEl.isConnected) {
-          this.scheduleFragmentSweep(sectionEl, ctx, triesLeft - 1);
-          return;
-        }
-        this.sweepSiblingFragments(sectionEl, ctx);
-      } catch (error) {
-        console.error("details-markdown: fragment sweep failed", error);
-      }
-    });
-  }
-
-  private sweepSiblingFragments(
-    sectionEl: HTMLElement,
-    ctx: MarkdownPostProcessorContext
-  ): void {
-    const openingInfo = ctx.getSectionInfo(sectionEl);
-    const parent = sectionEl.parentElement;
-    if (openingInfo === null || parent === null) {
-      return;
-    }
-    const ranges = DetailsRangeScanner.scan(openingInfo.text);
-    for (const sibling of Array.from(parent.children)) {
-      if (
-        sibling === sectionEl ||
-        !(sibling instanceof HTMLElement) ||
-        sibling.classList.contains(HIDDEN_FRAGMENT_CLASS)
-      ) {
-        continue;
-      }
-      const info = ctx.getSectionInfo(sibling);
-      if (info === null) {
-        continue;
-      }
-      const role = SectionRoleClassifier.classify(ranges, info.lineStart, info.lineEnd);
-      if (role.kind === "fragment" && role.range.startLine === openingInfo.lineStart) {
-        this.hideFragment(sibling, ctx.sourcePath);
+    for (const el of blocks.sections.keys()) {
+      const info = ctx.getSectionInfo(el);
+      if (info !== null && info.lineStart > range.startLine && info.lineEnd <= range.endLine) {
+        el.classList.add(HIDDEN_FRAGMENT_CLASS);
       }
     }
   }
 
   // ---------------------------------------------------------------------------
-  // Reconciliation: staleness after interior edits, unhiding, dead-entry cleanup
+  // Reconciliation: staleness after edits, hidden state, dead-entry cleanup
   // ---------------------------------------------------------------------------
 
-  private async reconcileTrackedBlocks(
-    ctx: MarkdownPostProcessorContext,
-    ranges: DetailsRange[],
-    lines: string[]
-  ): Promise<void> {
-    const path = ctx.sourcePath;
+  private settleOpenNotes(): void {
+    for (const leaf of this.app.workspace.getLeavesOfType("markdown")) {
+      const view = leaf.view;
+      if (view instanceof MarkdownView && view.file !== null) {
+        this.settle(view.file.path);
+      }
+    }
+  }
+
+  /** Re-syncs a note's tracked blocks for a short while, since views re-parse on their own schedule. */
+  private settle(path: string): void {
     const blocks = this.blocksByPath.get(path);
     if (blocks === undefined) {
       return;
     }
+    blocks.settleUntil = Date.now() + SETTLE_DURATION_MS;
+    if (blocks.settling) {
+      return;
+    }
+    blocks.settling = true;
+    const tick = async (): Promise<void> => {
+      try {
+        await this.reconcileTrackedBlocks(path, blocks);
+      } catch (error) {
+        console.error("details-markdown: failed to reconcile", error);
+      }
+      // Stops once tracking is dropped (unload, delete, rename) or the window has passed.
+      if (Date.now() < blocks.settleUntil && this.blocksByPath.get(path) === blocks) {
+        window.setTimeout(tick, SETTLE_INTERVAL_MS);
+      } else {
+        blocks.settling = false;
+      }
+    };
+    window.setTimeout(tick, SETTLE_INTERVAL_MS);
+  }
 
+  /**
+   * Brings every tracked block of a note in line with the source its own view shows now.
+   * Each entry resolves through the context of the view that rendered it, so open tabs
+   * that show different versions of the note (a hidden tab not yet re-parsed) stay correct.
+   */
+  private async reconcileTrackedBlocks(path: string, blocks: PathBlocks): Promise<void> {
+    const scans = new Map<string, ScannedSource>();
+    const scan = (text: string): ScannedSource => {
+      let scanned = scans.get(text);
+      if (scanned === undefined) {
+        scanned = { lines: text.split("\n"), ranges: DetailsRangeScanner.scan(text) };
+        scans.set(text, scanned);
+      }
+      return scanned;
+    };
+
+    // Reading view detaches sections scrolled out of view and reattaches the same elements,
+    // so a detached entry stays tracked. It is dropped only once its section is gone.
     for (const entry of [...blocks.rendered]) {
       entry.everConnected ||= entry.sectionEl.isConnected;
-      if (entry.everConnected && !entry.sectionEl.isConnected) {
-        this.remove(blocks.rendered, entry);
-        continue;
-      }
-      const info = ctx.getSectionInfo(entry.sectionEl);
+      const info = entry.ctx.getSectionInfo(entry.sectionEl);
       if (info === null) {
+        if (entry.everConnected && !entry.sectionEl.isConnected) {
+          this.remove(blocks.rendered, entry);
+        }
         continue;
       }
-      const range = ranges.find((r) => r.startLine === info.lineStart);
+      const { lines, ranges } = scan(info.text);
+      if (lines.length <= info.lineEnd) {
+        // The view's text is partial mid-render; decide on a later pass.
+        continue;
+      }
+      const range = ranges.find((r) => info.lineStart <= r.startLine && r.startLine <= info.lineEnd);
       if (range === undefined) {
         // Block boundary edited away (e.g. </details> deleted): full re-render restores
         // native output; entry removed first so this cannot loop.
@@ -291,25 +412,36 @@ export default class DetailsMarkdownPlugin extends Plugin {
       }
       const source = this.sliceRange(lines, range);
       if (source !== entry.renderedSource) {
-        await this.rerenderStaleBody(entry, source, ctx);
+        await this.rerenderStaleBody(path, blocks, entry, source);
       }
     }
 
-    for (const fragment of [...blocks.hidden]) {
-      fragment.everConnected ||= fragment.el.isConnected;
-      if (fragment.everConnected && !fragment.el.isConnected) {
-        this.remove(blocks.hidden, fragment);
+    // An edit re-processes only the sections whose text changed, yet can change the role of
+    // unchanged ones (a fold wrapped around them, or unwrapped), so re-decide each tracked
+    // section whenever the text its view shows has changed since its last decision.
+    for (const [el, tracked] of blocks.sections) {
+      tracked.everConnected ||= el.isConnected;
+      const info = tracked.ctx.getSectionInfo(el);
+      if (info === null) {
+        if (tracked.everConnected && !el.isConnected) {
+          blocks.sections.delete(el);
+        }
         continue;
       }
-      const info = ctx.getSectionInfo(fragment.el);
-      if (info === null) {
+      if (info.text === tracked.syncedText) {
+        continue;
+      }
+      const { lines, ranges } = scan(info.text);
+      if (lines.length <= info.lineEnd) {
         continue;
       }
       const role = SectionRoleClassifier.classify(ranges, info.lineStart, info.lineEnd);
-      if (role.kind !== "fragment") {
-        fragment.el.classList.remove(HIDDEN_FRAGMENT_CLASS);
-        this.remove(blocks.hidden, fragment);
+      if (role.kind === "opening") {
+        // A block can gain its end (a </details> line typed back) with no change to its opening.
+        await this.renderOpeningSection(el, tracked.ctx, path, role.range, lines);
       }
+      this.syncFragmentHidden(el, tracked.ctx, path, role);
+      tracked.syncedText = info.text;
     }
   }
 
@@ -318,28 +450,29 @@ export default class DetailsMarkdownPlugin extends Plugin {
    * Obsidian re-renders only the edited fragment section, never the opening one.
    */
   private async rerenderStaleBody(
+    path: string,
+    blocks: PathBlocks,
     entry: RenderedBlockEntry,
-    source: string,
-    ctx: MarkdownPostProcessorContext
+    source: string
   ): Promise<void> {
     const parsed = DetailsBlockParser.parse(source);
     if (parsed === null || parsed.bodyMarkdown === "") {
-      this.remove(this.pathBlocks(ctx.sourcePath).rendered, entry);
-      this.rerenderViewsForPath(ctx.sourcePath);
+      this.remove(blocks.rendered, entry);
+      this.rerenderViewsForPath(path);
       return;
     }
     // Unload the old lifecycle owner so embeds from the previous body do not leak.
     entry.lifecycleOwner.unload();
     entry.bodyContainer.empty();
     const lifecycleOwner = new MarkdownRenderChild(entry.bodyContainer);
-    ctx.addChild(lifecycleOwner);
+    entry.ctx.addChild(lifecycleOwner);
     entry.lifecycleOwner = lifecycleOwner;
     entry.renderedSource = source;
     await MarkdownRenderer.render(
       this.app,
       parsed.bodyMarkdown,
       entry.bodyContainer,
-      ctx.sourcePath,
+      path,
       lifecycleOwner
     );
   }
@@ -355,16 +488,12 @@ export default class DetailsMarkdownPlugin extends Plugin {
   ): RenderedBlockEntry | null {
     for (const entry of this.pathBlocks(path).rendered) {
       const info = ctx.getSectionInfo(entry.sectionEl);
-      if (info !== null && info.lineStart === blockStartLine) {
+      // The opening section holds the block's start line, possibly after glued text.
+      if (info !== null && info.lineStart <= blockStartLine && blockStartLine <= info.lineEnd) {
         return entry;
       }
     }
     return null;
-  }
-
-  private hideFragment(el: HTMLElement, path: string): void {
-    el.classList.add(HIDDEN_FRAGMENT_CLASS);
-    this.pathBlocks(path).hidden.push({ el, everConnected: el.isConnected });
   }
 
   /**
@@ -385,7 +514,7 @@ export default class DetailsMarkdownPlugin extends Plugin {
   private pathBlocks(path: string): PathBlocks {
     let blocks = this.blocksByPath.get(path);
     if (blocks === undefined) {
-      blocks = { rendered: [], hidden: [] };
+      blocks = { rendered: [], sections: new Map(), source: null, settleUntil: 0, settling: false };
       this.blocksByPath.set(path, blocks);
     }
     return blocks;
