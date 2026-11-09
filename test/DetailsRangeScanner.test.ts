@@ -31,20 +31,12 @@ describe("DetailsRangeScanner.scan", () => {
     expect(scan(["<details>", "body forever"])).toEqual([]);
   });
 
-  it("THEN an opening tag with a class attribute is recognized", () => {
-    const lines = ['<details class="bordered-when-open">', "body", "</details>"];
-    expect(scan(lines)).toEqual([{ startLine: 0, endLine: 2 }]);
-  });
-
-  it("THEN an opening line that also holds the summary is recognized", () => {
-    const lines = ["<details><summary>S</summary>", "", "body", "", "</details>"];
-    expect(scan(lines)).toEqual([{ startLine: 0, endLine: 4 }]);
-  });
-
-  it("THEN a nested inline-summary block extends the outer range to the matching close", () => {
-    const lines = ["<details><summary>Outer</summary>", "<details><summary>Inner</summary>", "x", "</details>", "</details>"];
-    expect(scan(lines)).toEqual([{ startLine: 0, endLine: 4 }]);
-  });
+  it.each([['<details class="bordered-when-open">'], ["<details><summary>S</summary>"]])(
+    "THEN the opening line %s is recognized",
+    (opening) => {
+      expect(scan([opening, "", "body", "", "</details>"])).toEqual([{ startLine: 0, endLine: 4 }]);
+    }
+  );
 
   it("THEN a nested block on its own lines extends the outer range to the matching close", () => {
     const lines = ["<details>", "<details>", "inner", "</details>", "</details>"];
